@@ -20,6 +20,14 @@ This docker image provide:
 Nothing else for now, and it is sufficient most of the time. If you have some suggestion of what is needed or how to make this image smaller, 
 it is welcome to comment an issue.
 
+# Warning
+
+Currently we are going through a transition phase from in-docker-terminal `lxterminal` to terminal outside. That means currently this support will be gradually added, but not instantely. If you get into any trouble, you can always fall back to pypi version instead of directly use github version. (Yes I'm just tired of managing branches) Pypi version should be working fine for now.
+
+# Notice
+
+Due to some miserable reason, `Python2` support is now officially dropped in this project, outside of docker. Please use `Python3` to install `ancypwn`. `notiterm` script can still be used by `Python2`.
+
 # Installation
 
 ## Linux & MacOS Normal Setup
@@ -28,24 +36,45 @@ it is welcome to comment an issue.
 
 2. we have provided you with a `Dockerfile`, you can build an image yourself. And, please do that by using given `build.sh`, run `build.sh`. If you want more customization, please refer to customization section, and understand what's under the hood.
 
-3. Alternatively, you can pull down anciety/ancypwn:16.04, and tag it to `ancypwn:16.04`, ubuntu version number is switchable.
+3. Alternatively, you can pull down anciety/ancypwn:16.04, and tag it to `ancypwn:16.04`, ubuntu version number is switchable. (So anciety/ancypwn:18.10 shuld be tagged as `ancypwn:18.10`)
 
 3. Run `python setup.py install`, or maybe you need `sudo`. Pip version is also provided and recommended `pip install ancypwn`
 
-4. Everything should be good by now. If you got permission problems, try `sudo`
+4. Everything should be good by now. If you got permission problems, try `sudo`, or you are using `MacOS`, see following for help.
 
-## MacOS GUI setup
+5. If you see some error message complaining about "pull access denied" or something like that, check if your tag is corret.
 
-For correctly use GUI programs (particularly, lxterminal, so that you will can use `gdb.attach()` within `pwntools`), MacOS needs to do the following(Linux users using xserver don't need to worry about these):
+## To use `pwntools` `gdb.attach` function
 
-1. Install xquartz , you can use `brew cask install xquartz` if you are using homebrew.
-2. open -a XQuartz and set it like this:
-   ![](https://blog-1252049492.cos.ap-hongkong.myqcloud.com/img/Xquartz.png)
-3. Now everything should be done.
-4. If you have encountered warning messages like "ancypwn cannot automatically set DISPLAY", then you should do following steps
-5. First, use `ip addr show` or `ifconfig` to see what's your ip address of your using network card
-6. Next, set `ANCYPWN_DISPLAY` environment variable to "[ip]:0", after these, it should be fine. You can use ancypwn and see if `lxterminal` is working.
+### MacOS
 
+Set your pwntools' terminal like this:
+
+```python
+context.terminal = ['notiterm', '-t', 'iterm', '-e']
+```
+
+After this `gdb.attach` will give you a newly created terminal.
+
+You can change `iterm` to `Terminal` if you are using Terminal.
+
+If you port 15111 is used, or you are using a non-default port when starting `ancypwn`, you can add a `-p`, `[PORT]` to the list:
+
+```python
+context.terminal = ['notiterm', '-t', 'iterm', '-p', '50806', '-e'] # use 50806 port as an example
+```
+
+### Linux
+
+Linux support for outside terminal is still being written and tested. Currently old method is used under linux.
+
+Set your `pwntools` like this:
+
+```python
+context.terminal = ['lxterminal', '-e']
+```
+
+Note that this will give you an ugly and config-not-savable `lxterminal` only.
 
 # Usage
 
@@ -65,6 +94,18 @@ optional arguments:
 
 ```
 
+# Common Problems
+
+## Mac OSX "objc[1895]: +[NSString initialize] may have been in progress in another thread when fork() was called."
+
+Reported by one of the users, I haven't met this situation, thus I have no idea why this is happening.
+
+Solution is set this environment variable:
+
+```
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+```
+
 # Examples
 
 During CTF games, we usually need a dynamic analysis environment to do all the dynamic stuff, but
@@ -75,30 +116,20 @@ So, we just use the `ancypwn`, and do something like this:
 ```
 # Suppose we have a directory to save all pwnable challenges
 # And we run like this
-# Term 1:
+
 cd pwn
 sudo ancypwn run .
+
 # Now we are in a docker shell, and do something, like playing with the original binary
 # Then we create another terminal, to use gdb to attach it
 # The mounted directory are in `/pwn`
 cd /pwn
 ./example_binary
 
-# Term 2:
-sudo ancypwn attach
-# Now we are in the docker shell which is in the same docker machine of the previous one, but
-# we have a different shell, we can use gdb to attach to the processes now
-gdb
-(gdb) attach PID
-
-# We can also run exploit python script directly, you'd like to write something like `raw_input`
-# to pause the process a little bit and let terminal 2 to use gdb to attach to it.
-# Term 1:
-python exp.py
-
-# Term 2:
-gdb
-(gdb) attach PID
+# In another terminal, you should edit your exploit. Set the pwntools settings like above mentioned.
+# Then run it like normal.
+python exploit.py
+# If you used gdb.attach, it should create a new terminal for you.
 ```
 
 In general, this simple script only provides you a direct way of using docker. All things are done
@@ -120,13 +151,18 @@ And for finding the correct image to start, it searches for tags with form `ancy
 
 After start the image, it will run a bash as a background process in the container to hold up the container, and whenever you want shell access, it will exec bash inside the container. This is done by saving started container name in `/tmp/ancypwn.id`.
 
+To support outside terminal, which means to support a terminal runs outside of docker, but works like it is inside, we have a client-server structure. A client called `notiterm.py` is used, and a server
+is run each time you use `ancypwn run`, and the process will be alive until you use `ancypwn end`.
+
+Whenever you use `notiterm.py` to call for a new command run in terminal, this command will be transfered to outside server, and the server will setup a new terminal outside to run `ancypwn attach` and run the command.
+
 ## To Customize
 
 For this reason, if you want to have your own image running with `ancypwn` script, you just need to build your own docker image, and then tag it using name `ancypwn:{ubuntu version number}`.
 
 Actually, the ubuntu version can be anything, it just fires a warning when it is not officially ones. So you can tag a thing like `ancypwn:hello`, and use it like `ancypwn run . --ubuntu hello`.
 
-I will consider add a more specific argument so this "ubuntu" arguments don't seem to strange.
+I will consider add a more specific argument so this "ubuntu" arguments don't seem to be too strange.
 
 # Status
 

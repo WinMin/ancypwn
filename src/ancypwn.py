@@ -1,5 +1,4 @@
 #!/bin/python
-from __future__ import print_function
 import argparse
 import os
 import os.path
@@ -10,7 +9,10 @@ import socket
 import fcntl
 import platform
 import struct
+import signal
 import subprocess as sp
+from .notify.server import ServerProcess
+from daemonize import Daemonize
 
 from distutils.dir_util import mkpath
 
@@ -18,6 +20,8 @@ APPNAME = 'ancypwn'
 APPAUTHOR = 'Anciety'
 
 EXIST_FLAG = '/tmp/ancypwn.id'
+DAEMON_PID = '/tmp/ancypwn.daemon.pid'
+
 SUPPORTED_UBUNTU_VERSION = [
 #    '14.04', Still many issues to be solved (version problems mostly)
     '16.04',
@@ -89,6 +93,11 @@ def parse_args():
         type=str,
         help='The version of ubuntu to open'
     )
+    run_parser.add_argument(
+        '--port',
+        type=int,
+        help='port of outside terminal server, default 15111'
+    )
     run_parser.set_defaults(func=run_pwn)
 
     run_parser.add_argument(
@@ -116,14 +125,13 @@ def parse_args():
     else:
         parser.print_usage()
 
-def _get_ip_address(ifname):
-    """Gets ip address of some interface
-    """
-    cmd = ("ifconfig %s| grep 'inet ' | awk -F: '{print $1}' | awk '{print $2}'" %str(ifname))
-    ip = os.popen(cmd).read().replace("\n","")
 
-    return ip
+def _kill_server_daemon():
+    with open(DAEMON_PID, 'r') as f:
+        pid = int(f.read())
 
+    os.kill(pid, signal.SIGTERM)
+    os.remove(DAEMON_PID)
 
 
 def _get_terminal_size():
@@ -192,6 +200,8 @@ def run_pwn(args):
     """Runs a pwn thread
     Just sets needed docker arguments and run it
     """
+    port = args.port if not args.port is None else 15111
+
     if not args.ubuntu:
         ubuntu = '16.04'
     else:
@@ -209,35 +219,28 @@ def run_pwn(args):
         raise IOError('No such directory')
 
     if os.path.exists(EXIST_FLAG):
-        raise AlreadyRuningException('ancypwn is already running, you should either end it  to run again or attach it')
+        raise AlreadyRuningException('ancypwn is already running, you should either end it to run again or attach it')
+
+    # run server before dealing with docker
+    child_pid = os.fork()
+    if child_pid == 0:
+        # sub process
+        def start_server():
+            server = ServerProcess(port, daemon=True)
+            server.start()
+            server.join() # hold it!
+
+        daemon = Daemonize(app='ancypwn_server', pid=DAEMON_PID, action=start_server)
+        daemon.start()
+        return
 
     privileged = True if args.priv else False
 
     # First we need a running thread in the background, to hold existence
     try:
-        ancypwn_display = os.environ.get('ANCYPWN_DISPLAY')
-        if platform.system() == 'Darwin':
-            if ancypwn_display is None:
-                # under macos, we need extra settings if user does't have one
-                try:
-                    ip_addr = _get_ip_address('en0')
-                except Exception:
-                    print('unable to automatic setup DISPLAY environment.')
-                    print('this is needed because of running gui program within docker')
-                    print('please determine your current ip address and setup environment ANCYPWN_DISPLAY as [ip]:0')
-                    print('if you just ignore this, set ANCYPWN_DISPLAY environment to :0 should do')
-                    raise SetupError()
-                os.environ['DISPLAY'] = ip_addr + ':0'
-            else:
-                os.environ['DISPLAY'] = ancypwn_display
-        os.system('xhost +')
-        running_container = container.run(
-            'ancypwn:{}'.format(ubuntu),
-            '/bin/bash',
-            cap_add=['SYS_ADMIN', 'SYS_PTRACE'],
-            detach=True,
-            tty=True,
-            volumes={
+        if platform.system() != 'Darwin':
+            os.system('xhost +')
+            volumes = {
                 os.path.expanduser(args.directory) : {
                     'bind': '/pwn',
                     'mode': 'rw'
@@ -250,7 +253,21 @@ def run_pwn(args):
                     'bind': '/tmp/.X11-unix',
                     'mode': 'rw'
                 }
-            },
+            }
+        else:
+            volumes = {
+                os.path.expanduser(args.directory) : {
+                    'bind': '/pwn',
+                    'mode': 'rw'
+                }
+            }
+        running_container = container.run(
+            'ancypwn:{}'.format(ubuntu),
+            '/bin/bash',
+            cap_add=['SYS_ADMIN', 'SYS_PTRACE'],
+            detach=True,
+            tty=True,
+            volumes=volumes,
             privileged=privileged,
             network_mode='host',
             environment={
@@ -261,7 +278,11 @@ def run_pwn(args):
     except Exception as e:
         print('Ancypwn unable to run docker container')
         print('please refer to documentation to correctly setup your environment')
-        print()
+        print('or check your local environment is good for docker')
+
+        # stop running server
+
+        _kill_server_daemon()
         raise e
 
     # Set flag, save the container id
@@ -297,6 +318,8 @@ def end_pwn(args):
         raise NotRunningException('No pwn thread running, corrupted meta info file, deleted')
     conts[0].stop()
     os.remove(EXIST_FLAG)
+
+    _kill_server_daemon()
 
 
 def main():
